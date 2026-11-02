@@ -16,6 +16,12 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Data Detective
+
+Open `http://localhost:3000/en/detective` to analyze an uploaded CSV or the built-in retail sample. The server-side route uses the OpenAI Agents API and an OpenAI-hosted sandbox; set `OPENAI_API_KEY` in the server environment before starting the app. The application key needs `api.agents.read`, `api.agents.write`, and `api.responses.write` permissions. Optionally set `OPENAI_MODEL` to choose an available model (defaults to `gpt-6-astra`). Never add the key to a `NEXT_PUBLIC_*` variable or send it to the browser.
+
+The sample CSV is at `public/samples/retail-orders.csv`. Uploaded CSVs are limited to 5 MB. Session IDs and chat history are stored locally in the browser; the CSV itself is not persisted in browser storage.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
