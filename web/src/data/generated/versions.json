@@ -52,6 +52,39 @@
       "source": "#!/usr/bin/env python3\n# Harness: the loop -- keep feeding real tool results back into the model.\n\"\"\"\ns01_agent_loop.py - The Agent Loop\n\nThis file teaches the smallest useful coding-agent pattern:\n\n    user message\n      -> model reply\n      -> if tool_use: execute tools\n      -> write tool_result back to messages\n      -> continue\n\nIt intentionally keeps the loop small, but still makes the loop state explicit\nso later chapters can grow from the same structure.\n\"\"\"\n\nimport os\nimport subprocess\nfrom dataclasses import dataclass\n\ntry:\n    import readline\n    # #143 UTF-8 backspace fix for macOS libedit\n    readline.parse_and_bind('set bind-tty-special-chars off')\n    readline.parse_and_bind('set input-meta on')\n    readline.parse_and_bind('set output-meta on')\n    readline.parse_and_bind('set convert-meta off')\n    readline.parse_and_bind('set enable-meta-keybindings on')\nexcept ImportError:\n    pass\n\nfrom anthropic import Anthropic\nfrom dotenv import load_dotenv\n\nload_dotenv(override=True)\n\nif os.getenv(\"ANTHROPIC_BASE_URL\"):\n    os.environ.pop(\"ANTHROPIC_AUTH_TOKEN\", None)\n\nclient = Anthropic(base_url=os.getenv(\"ANTHROPIC_BASE_URL\"))\nMODEL = os.environ[\"MODEL_ID\"]\n\nSYSTEM = (\n    f\"You are a coding agent at {os.getcwd()}. \"\n    \"Use bash to inspect and change the workspace. Act first, then report clearly.\"\n)\n\nTOOLS = [{\n    \"name\": \"bash\",\n    \"description\": \"Run a shell command in the current workspace.\",\n    \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\"command\": {\"type\": \"string\"}},\n        \"required\": [\"command\"],\n    },\n}]\n\n\n@dataclass\nclass LoopState:\n    # The minimal loop state: history, loop count, and why we continue.\n    messages: list\n    turn_count: int = 1\n    transition_reason: str | None = None\n\n\ndef run_bash(command: str) -> str:\n    dangerous = [\"rm -rf /\", \"sudo\", \"shutdown\", \"reboot\", \"> /dev/\"]\n    if any(item in command for item in dangerous):\n        return \"Error: Dangerous command blocked\"\n    try:\n        result = subprocess.run(\n            command,\n            shell=True,\n            cwd=os.getcwd(),\n            capture_output=True,\n            text=True,\n            timeout=120,\n        )\n    except subprocess.TimeoutExpired:\n        return \"Error: Timeout (120s)\"\n    except (FileNotFoundError, OSError) as e:\n        return f\"Error: {e}\"\n\n    output = (result.stdout + result.stderr).strip()\n    return output[:50000] if output else \"(no output)\"\n\n\ndef extract_text(content) -> str:\n    if not isinstance(content, list):\n        return \"\"\n    texts = []\n    for block in content:\n        text = getattr(block, \"text\", None)\n        if text:\n            texts.append(text)\n    return \"\\n\".join(texts).strip()\n\n\ndef execute_tool_calls(response_content) -> list[dict]:\n    results = []\n    for block in response_content:\n        if block.type != \"tool_use\":\n            continue\n        command = block.input[\"command\"]\n        print(f\"\\033[33m$ {command}\\033[0m\")\n        output = run_bash(command)\n        print(output[:200])\n        results.append({\n            \"type\": \"tool_result\",\n            \"tool_use_id\": block.id,\n            \"content\": output,\n        })\n    return results\n\n\ndef run_one_turn(state: LoopState) -> bool:\n    response = client.messages.create(\n        model=MODEL,\n        system=SYSTEM,\n        messages=state.messages,\n        tools=TOOLS,\n        max_tokens=8000,\n    )\n    state.messages.append({\"role\": \"assistant\", \"content\": response.content})\n\n    if response.stop_reason != \"tool_use\":\n        state.transition_reason = None\n        return False\n\n    results = execute_tool_calls(response.content)\n    if not results:\n        state.transition_reason = None\n        return False\n\n    state.messages.append({\"role\": \"user\", \"content\": results})\n    state.turn_count += 1\n    state.transition_reason = \"tool_result\"\n    return True\n\n\ndef agent_loop(state: LoopState) -> None:\n    while run_one_turn(state):\n        pass\n\n\nif __name__ == \"__main__\":\n    history = []\n    while True:\n        try:\n            query = input(\"\\033[36ms01 >> \\033[0m\")\n        except (EOFError, KeyboardInterrupt):\n            break\n        if query.strip().lower() in (\"q\", \"exit\", \"\"):\n            break\n\n        history.append({\"role\": \"user\", \"content\": query})\n        state = LoopState(messages=history)\n        agent_loop(state)\n\n        final_text = extract_text(history[-1][\"content\"])\n        if final_text:\n            print(final_text)\n        print()\n"
     },
     {
+      "id": "s01",
+      "filename": "s01_openai_agent_loop.py",
+      "title": "The Agent Loop",
+      "subtitle": "Minimal Closed Loop",
+      "loc": 123,
+      "tools": [
+        "bash"
+      ],
+      "newTools": [],
+      "coreAddition": "LoopState + tool_result feedback",
+      "keyInsight": "An agent is just a loop: send messages, execute tools, feed results back, repeat.",
+      "classes": [],
+      "functions": [
+        {
+          "name": "run_bash",
+          "signature": "def run_bash(command: str)",
+          "startLine": 52
+        },
+        {
+          "name": "run_agent",
+          "signature": "def run_agent(history: list[dict])",
+          "startLine": 74
+        },
+        {
+          "name": "report_turn_error",
+          "signature": "def report_turn_error(exc: Exception)",
+          "startLine": 104
+        }
+      ],
+      "layer": "core",
+      "source": "#!/usr/bin/env python3\n\"\"\"A minimal coding-agent loop using OpenAI's Responses API.\"\"\"\n\nimport json\nimport os\nimport subprocess\n\ntry:\n    import readline\n    # #143 UTF-8 backspace fix for macOS libedit\n    readline.parse_and_bind(\"set bind-tty-special-chars off\")\n    readline.parse_and_bind(\"set input-meta on\")\n    readline.parse_and_bind(\"set output-meta on\")\n    readline.parse_and_bind(\"set convert-meta off\")\n    readline.parse_and_bind(\"set enable-meta-keybindings on\")\nexcept ImportError:\n    pass\n\nfrom dotenv import load_dotenv\n\nload_dotenv(override=True)\n\nif not os.getenv(\"OPENAI_API_KEY\"):\n    raise SystemExit(\"OPENAI_API_KEY is missing. Add it to the project .env file.\")\n\nfrom openai import OpenAI\n\nclient = OpenAI()\nMODEL = os.getenv(\"OPENAI_MODEL_ID\") or os.getenv(\"MODEL_ID\")\nif not MODEL:\n    raise SystemExit(\"Set OPENAI_MODEL_ID or MODEL_ID in the project .env file.\")\n\nSYSTEM = (\n    f\"You are a coding agent at {os.getcwd()}. \"\n    \"Use bash to inspect and change the workspace. Act first, then report clearly.\"\n)\n\nTOOLS = [{\n    \"type\": \"function\",\n    \"name\": \"bash\",\n    \"description\": \"Run a shell command in the current workspace.\",\n    \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\"command\": {\"type\": \"string\"}},\n        \"required\": [\"command\"],\n        \"additionalProperties\": False,\n    },\n    \"strict\": False,\n}]\n\n\ndef run_bash(command: str) -> str:\n    dangerous = [\"rm -rf /\", \"sudo\", \"shutdown\", \"reboot\", \"> /dev/\"]\n    if any(item in command for item in dangerous):\n        return \"Error: Dangerous command blocked\"\n    try:\n        result = subprocess.run(\n            command,\n            shell=True,\n            cwd=os.getcwd(),\n            capture_output=True,\n            text=True,\n            timeout=120,\n        )\n    except subprocess.TimeoutExpired:\n        return \"Error: Timeout (120s)\"\n    except (FileNotFoundError, OSError) as exc:\n        return f\"Error: {exc}\"\n\n    output = (result.stdout + result.stderr).strip()\n    return output[:50000] if output else \"(no output)\"\n\n\ndef run_agent(history: list[dict]) -> str:\n    while True:\n        response = client.responses.create(\n            model=MODEL,\n            instructions=SYSTEM,\n            input=history,\n            tools=TOOLS,\n        )\n\n        # Responses output items, including assistant text and function calls,\n        # must be carried forward to keep the tool-call exchange in context.\n        history.extend(item.model_dump(exclude_none=True) for item in response.output)\n\n        calls = [item for item in response.output if item.type == \"function_call\"]\n        if not calls:\n            return response.output_text\n\n        for call in calls:\n            arguments = json.loads(call.arguments)\n            command = arguments[\"command\"]\n            print(f\"\\033[33m$ {command}\\033[0m\")\n            output = run_bash(command)\n            print(output[:200])\n            history.append({\n                \"type\": \"function_call_output\",\n                \"call_id\": call.call_id,\n                \"output\": output,\n            })\n\n\ndef report_turn_error(exc: Exception) -> None:\n    \"\"\"Show a useful recovery hint without exposing environment variables.\"\"\"\n    status_code = getattr(exc, \"status_code\", None)\n    detail = str(exc)\n    print(f\"\\n\\033[31m[本轮未完成] {type(exc).__name__}: {detail}\\033[0m\")\n\n    if status_code == 401:\n        print(\"处理建议：检查本地 .env 中的 OPENAI_API_KEY 是否有效，并确认 PyCharm 使用了正确的项目配置。\")\n    elif status_code == 429:\n        if \"credit\" in detail.lower() or \"quota\" in detail.lower():\n            print(\"处理建议：检查 OpenAI API 组织的可用额度或账单设置；额度恢复后可直接输入下一条重试。\")\n        else:\n            print(\"处理建议：请求频率或额度可能已达限制；稍后重试，或检查 API 项目的使用限制。\")\n    elif status_code == 404:\n        print(\"处理建议：检查 MODEL_ID 是否为该 API 项目可用的模型 ID。\")\n    elif status_code is None:\n        print(\"处理建议：检查网络连接和 OpenAI API 服务状态后重试。\")\n    else:\n        print(\"处理建议：根据上面的错误详情修复配置或请求后，再输入一条消息重试。\")\n\n    print(\"程序仍保持运行。输入 exit 或 q 可退出。\\n\")\n\n\nif __name__ == \"__main__\":\n    conversation = []\n    while True:\n        try:\n            query = input(\"\\033[36ms01 OpenAI >> \\033[0m\")\n        except (EOFError, KeyboardInterrupt):\n            break\n        if query.strip().lower() in (\"q\", \"exit\", \"\"):\n            break\n\n        turn_start = len(conversation)\n        conversation.append({\"role\": \"user\", \"content\": query})\n        try:\n            answer = run_agent(conversation)\n        except KeyboardInterrupt:\n            del conversation[turn_start:]\n            print(\"\\n本轮已中断，对话已恢复到本轮开始前。可以继续输入，或输入 exit 退出。\\n\")\n            continue\n        except Exception as exc:\n            # Discard partial state from the failed turn so the next prompt can\n            # retry cleanly after the user fixes the reported issue.\n            del conversation[turn_start:]\n            report_turn_error(exc)\n            continue\n        if answer:\n            print(answer)\n        print()\n"
+    },
+    {
       "id": "s02",
       "filename": "s02_tool_use.py",
       "title": "Tool Use",
@@ -1468,14 +1501,15 @@
         "run_read",
         "run_write",
         "run_edit",
-        "normalize_messages"
+        "normalize_messages",
+        "agent_loop"
       ],
       "newTools": [
         "read_file",
         "write_file",
         "edit_file"
       ],
-      "locDelta": 39
+      "locDelta": 46
     },
     {
       "from": "s02",
